@@ -1,0 +1,76 @@
+================================================================================
+                    AMEBACRYPTO - UNISWAP V4 HOOK PROJECT
+================================================================================
+
+✅ CONFIGURAÇÃO INICIAL CONCLUÍDA!
+
+O Ubuntu foi instalado no WSL, mas você precisa REINICIAR o Windows para
+que o WSL funcione completamente.
+
+================================================================================
+📋 PRÓXIMOS PASSOS (APÓS REINICIAR):
+================================================================================
+
+1. REINICIE O WINDOWS AGORA
+
+2. Após reiniciar, abra o PowerShell e execute:
+
+   cd C:\Users\derek\amebacrypto
+   .\APOS-REINICIAR.ps1
+
+   OU manualmente:
+
+   wsl
+   curl -L https://foundry.paradigm.xyz | bash
+   foundryup
+
+3. Verificar instalação:
+
+   wsl forge --version
+
+4. Testar o projeto:
+
+   wsl forge test
+
+================================================================================
+📁 ARQUIVOS IMPORTANTES:
+================================================================================
+
+- RESUMO-INSTALACAO.md    → Guia completo de instalação
+- INICIO-RAPIDO.md         → Guia rápido de uso
+- APOS-REINICIAR.ps1       → Script para executar após reiniciar
+- POS-REINICIAR.md         → Instruções detalhadas
+
+================================================================================
+🚀 APÓS INSTALAR O FOUNDRY:
+================================================================================
+
+# Testar instalação
+wsl forge --version
+
+# Executar testes do projeto
+wsl forge test
+
+# Compilar contratos
+wsl forge build
+
+# Trabalhar no projeto (entrar no WSL)
+wsl
+cd /mnt/c/Users/derek/amebacrypto
+forge test
+
+================================================================================
+💡 DICA:
+================================================================================
+
+Você pode executar comandos Foundry diretamente do PowerShell usando:
+
+  wsl forge [comando]
+
+Por exemplo:
+  wsl forge test
+  wsl forge build
+  wsl forge script script/00_DeployHook.s.sol
+
+================================================================================
+
