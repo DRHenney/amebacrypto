@@ -44,7 +44,7 @@ contract AutoCompoundHookTest is Test {
         poolId = poolKey.toId();
     }
 
-    function test_Constructor() public {
+    function test_Constructor() public view {
         assertEq(hook.owner(), owner);
         assertEq(address(hook.poolManager()), mockPoolManager);
     }

@@ -67,7 +67,7 @@ contract BaseScript is Script, Deployers {
         }
     }
 
-    function getDeployer() internal returns (address) {
+    function getDeployer() internal override returns (address) {
         address[] memory wallets = vm.getWallets();
 
         if (wallets.length > 0) {

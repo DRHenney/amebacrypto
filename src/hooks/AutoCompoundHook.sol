@@ -203,7 +203,7 @@ contract AutoCompoundHook is BaseHook {
     function _afterSwap(
         address,
         PoolKey calldata key,
-        SwapParams calldata params,
+        SwapParams calldata /* params */,
         BalanceDelta delta,
         bytes calldata
     ) internal override returns (bytes4, int128) {
@@ -279,12 +279,12 @@ contract AutoCompoundHook is BaseHook {
     /// @notice Callback após remover liquidez
     function _afterRemoveLiquidity(
         address,
-        PoolKey calldata key,
+        PoolKey calldata /* key */,
         ModifyLiquidityParams calldata,
         BalanceDelta,
         BalanceDelta,
         bytes calldata
-    ) internal override returns (bytes4, BalanceDelta) {
+    ) internal pure override returns (bytes4, BalanceDelta) {
         // Não fazemos compound ao remover liquidez
         return (this.afterRemoveLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
     }
@@ -361,7 +361,7 @@ contract AutoCompoundHook is BaseHook {
                 accumulatedFees1[poolId] = 0;
                 
                 // Chamar modifyLiquidity para adicionar as taxas como liquidez
-                try poolManager.modifyLiquidity(key, params, "") returns (BalanceDelta callerDelta, BalanceDelta feesAccrued) {
+                try poolManager.modifyLiquidity(key, params, "") returns (BalanceDelta /* callerDelta */, BalanceDelta /* feesAccrued */) {
                     // Atualizar timestamp do último compound
                     lastCompoundTimestamp[poolId] = block.timestamp;
                     emit FeesCompounded(poolId, fees0, fees1);
@@ -383,9 +383,8 @@ contract AutoCompoundHook is BaseHook {
 
     /// @notice Calcula o custo de gas em USD
     /// @dev Estima o custo de gas para executar compound e converte para USD
-    /// @param poolId ID da pool
     /// @return gasCostUSD Custo de gas em USD
-    function _calculateGasCostUSD(PoolId poolId) internal view returns (uint256 gasCostUSD) {
+    function _calculateGasCostUSD(PoolId /* poolId */) internal view returns (uint256 gasCostUSD) {
         // Estimativa de gas para compound: ~200k gas
         uint256 estimatedGasLimit = 200000;
         
@@ -439,19 +438,16 @@ contract AutoCompoundHook is BaseHook {
     
     /// @notice Calcula o delta de liquidez baseado nas quantidades de tokens
     /// @dev Esta é uma versão simplificada - para produção, use as fórmulas corretas do Uniswap v4
-    /// @param key A chave da pool
-    /// @param tickLower Tick inferior do range
-    /// @param tickUpper Tick superior do range
     /// @param amount0 Quantidade de token0
     /// @param amount1 Quantidade de token1
     /// @return liquidityDelta O delta de liquidez calculado
     function _calculateLiquidityFromAmounts(
-        PoolKey calldata key,
-        int24 tickLower,
-        int24 tickUpper,
+        PoolKey calldata /* key */,
+        int24 /* tickLower */,
+        int24 /* tickUpper */,
         uint256 amount0,
         uint256 amount1
-    ) internal view returns (int128 liquidityDelta) {
+    ) internal pure returns (int128 liquidityDelta) {
         // Nota: Esta é uma implementação simplificada
         // Para uma implementação completa, você precisaria:
         // 1. Obter o tick atual da pool
