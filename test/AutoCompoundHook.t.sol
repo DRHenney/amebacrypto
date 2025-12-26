@@ -52,17 +52,10 @@ contract AutoCompoundHookTest is Test {
     function test_SetPoolConfig() public {
         PoolKey memory key = poolKey;
         vm.prank(owner);
-        hook.setPoolConfig(key, 1e18, 2e18, true);
+        hook.setPoolConfig(key, true);
         
-        (
-            uint256 threshold0,
-            uint256 threshold1,
-            bool enabled,
-            uint256 gasMultiplier
-        ) = hook.poolConfigs(poolId);
+        (bool enabled) = hook.poolConfigs(poolId);
         
-        assertEq(threshold0, 1e18);
-        assertEq(threshold1, 2e18);
         assertTrue(enabled);
     }
 
@@ -88,7 +81,7 @@ contract AutoCompoundHookTest is Test {
     function test_AccumulateFees() public {
         PoolKey memory key = poolKey;
         vm.prank(owner);
-        hook.setPoolConfig(key, 1e18, 1e18, true);
+        hook.setPoolConfig(key, true);
         
         PoolKey memory key2 = poolKey;
         hook.accumulateFees(key2, 5e17, 5e17);
@@ -100,7 +93,7 @@ contract AutoCompoundHookTest is Test {
     function test_AccumulateFees_Disabled() public {
         PoolKey memory key = poolKey;
         vm.prank(owner);
-        hook.setPoolConfig(key, 1e18, 1e18, false);
+        hook.setPoolConfig(key, false);
         
         PoolKey memory key2 = poolKey;
         hook.accumulateFees(key2, 5e17, 5e17);
@@ -113,15 +106,16 @@ contract AutoCompoundHookTest is Test {
     function test_TryCompound_BelowThreshold() public {
         PoolKey memory key = poolKey;
         vm.prank(owner);
-        hook.setPoolConfig(key, 1e18, 1e18, true);
+        hook.setPoolConfig(key, true);
         
         PoolKey memory key2 = poolKey;
-        hook.accumulateFees(key2, 5e17, 5e17); // Abaixo do threshold
+        hook.accumulateFees(key2, 5e17, 5e17);
         
         PoolKey memory key3 = poolKey;
         hook.tryCompound(key3);
         
-        // Taxas não devem ser resetadas pois threshold não foi atingido
+        // Taxas não devem ser resetadas pois condições não foram atendidas
+        // (preços não configurados ou fees < 20x gas cost)
         assertEq(hook.accumulatedFees0(poolId), 5e17);
         assertEq(hook.accumulatedFees1(poolId), 5e17);
     }
@@ -138,7 +132,7 @@ contract AutoCompoundHookTest is Test {
     function test_GetPoolInfo() public {
         PoolKey memory key = poolKey;
         vm.prank(owner);
-        hook.setPoolConfig(key, 1e18, 2e18, true);
+        hook.setPoolConfig(key, true);
         
         PoolKey memory key2 = poolKey;
         vm.prank(owner);
@@ -156,10 +150,7 @@ contract AutoCompoundHookTest is Test {
             int24 tickUpper
         ) = hook.getPoolInfo(key4);
         
-        assertEq(config.compoundThreshold0, 1e18);
-        assertEq(config.compoundThreshold1, 2e18);
         assertTrue(config.enabled);
-        assertEq(config.gasMultiplier, 10); // Default
         assertEq(fees0, 5e17);
         assertEq(fees1, 5e17);
         assertEq(tickLower, -100);
@@ -170,7 +161,7 @@ contract AutoCompoundHookTest is Test {
         PoolKey memory key = poolKey;
         vm.prank(user);
         vm.expectRevert("Not owner");
-        hook.setPoolConfig(key, 1e18, 1e18, true);
+        hook.setPoolConfig(key, true);
     }
 
     function test_Revert_NotOwner_SetPoolTickRange() public {
@@ -202,7 +193,7 @@ contract AutoCompoundHookTest is Test {
     function test_EmergencyWithdraw() public {
         PoolKey memory key = poolKey;
         vm.prank(owner);
-        hook.setPoolConfig(key, 1e18, 1e18, true);
+        hook.setPoolConfig(key, true);
         
         PoolKey memory key2 = poolKey;
         hook.accumulateFees(key2, 1e18, 1e18);

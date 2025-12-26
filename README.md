@@ -1,66 +1,51 @@
-## Foundry
+# AmebaCrypto - AutoCompound Hook para Uniswap v4
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+Hook para Uniswap v4 que automaticamente reinveste taxas acumuladas de volta na pool de liquidez.
 
-Foundry consists of:
+## 📚 Documentação
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+- **[HOOK-AUTO-COMPOUND.md](./HOOK-AUTO-COMPOUND.md)**: Documentação completa do hook
+- **[Foundry Book](https://book.getfoundry.sh/)**: Documentação do Foundry
 
-## Documentation
+## 🚀 Uso
 
-https://book.getfoundry.sh/
-
-## Usage
-
-### Build
+### Compilar
 
 ```shell
-$ forge build
+forge build
 ```
 
-### Test
+### Testar
 
 ```shell
-$ forge test
+forge test
 ```
 
-### Format
+### Formatar
 
 ```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
+forge fmt
 ```
 
 ### Deploy
 
 ```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+forge script script/DeployAutoCompoundHook.s.sol --rpc-url <your_rpc_url> --private-key <your_private_key>
 ```
 
-### Cast
+## 🔧 Funcionalidades do Hook
 
-```shell
-$ cast <subcommand>
-```
+- **Acumulação automática de taxas** durante swaps
+- **Compound automático** quando:
+  - Passaram 4 horas desde o último compound
+  - Taxas acumuladas valem >= 20x o custo de gas em USD
+- **Cálculo automático de threshold** baseado no custo atual de gas
+- **Suporte para múltiplas pools** simultaneamente
 
-### Help
+Veja [HOOK-AUTO-COMPOUND.md](./HOOK-AUTO-COMPOUND.md) para mais detalhes.
 
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+## 📖 Recursos
+
+- [Documentação Uniswap v4](https://docs.uniswap.org/contracts/v4/overview)
+- [Foundry Book](https://book.getfoundry.sh/)
+- [v4-by-example](https://v4-by-example.org)

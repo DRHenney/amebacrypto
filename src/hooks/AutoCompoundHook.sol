@@ -19,21 +19,14 @@ contract AutoCompoundHook is BaseHook {
 
     // Eventos
     event FeesCompounded(PoolId indexed poolId, uint256 amount0, uint256 amount1);
-    event CompoundThresholdUpdated(PoolId indexed poolId, uint256 newThreshold);
 
     // Configurações por pool
     struct PoolConfig {
-        uint256 compoundThreshold0; // Threshold mínimo para compound em token0
-        uint256 compoundThreshold1; // Threshold mínimo para compound em token1
         bool enabled; // Se o auto-compound está habilitado para esta pool
-        uint256 gasMultiplier; // Multiplicador para cálculo de threshold baseado em gas (ex: 10 = 10x o custo de gas)
     }
 
     // Mapeamento de pool ID para configurações
     mapping(PoolId => PoolConfig) public poolConfigs;
-
-    // Mapeamento para thresholds em USD por pool
-    mapping(PoolId => uint256) public poolThresholds;
 
     // Mapeamento para rastrear taxas acumuladas
     mapping(PoolId => uint256) public accumulatedFees0;
@@ -144,122 +137,15 @@ contract AutoCompoundHook is BaseHook {
 
     /// @notice Configura uma pool para auto-compound
     /// @param key A chave da pool
-    /// @param threshold0 Threshold mínimo em token0 para trigger de compound
-    /// @param threshold1 Threshold mínimo em token1 para trigger de compound
     /// @param enabled Se o auto-compound está habilitado
     function setPoolConfig(
         PoolKey calldata key,
-        uint256 threshold0,
-        uint256 threshold1,
         bool enabled
     ) external onlyOwner {
         PoolId poolId = key.toId();
-        PoolConfig memory currentConfig = poolConfigs[poolId];
         poolConfigs[poolId] = PoolConfig({
-            compoundThreshold0: threshold0,
-            compoundThreshold1: threshold1,
-            enabled: enabled,
-            gasMultiplier: currentConfig.gasMultiplier > 0 ? currentConfig.gasMultiplier : 10 // Default 10x
+            enabled: enabled
         });
-        emit CompoundThresholdUpdated(poolId, threshold0);
-    }
-    
-    /// @notice Configura thresholds baseado em multiplicador do custo de gas (ex: 10x)
-    /// @dev Calcula thresholds automaticamente como N vezes o custo estimado de gas
-    /// @param key A chave da pool
-    /// @param gasMultiplier Multiplicador (ex: 10 = 10x o custo de gas)
-    /// @param estimatedGasLimit Gas estimado para executar compound (padrão: 200000)
-    /// @param token0PriceInWei Preço do token0 em wei (para converter gas cost para token0)
-    /// @param token1PriceInWei Preço do token1 em wei (para converter gas cost para token1)
-    /// @param enabled Se o auto-compound está habilitado
-    function setPoolConfigWithGasMultiplier(
-        PoolKey calldata key,
-        uint256 gasMultiplier,
-        uint256 estimatedGasLimit,
-        uint256 token0PriceInWei,
-        uint256 token1PriceInWei,
-        bool enabled
-    ) external onlyOwner {
-        require(gasMultiplier > 0, "Gas multiplier must be > 0");
-        require(estimatedGasLimit > 0, "Gas limit must be > 0");
-        
-        PoolId poolId = key.toId();
-        
-        // Calcular custo de gas em wei
-        // Usa block.basefee * 2 como estimativa (mais confiável que tx.gasprice)
-        uint256 gasPriceWei = block.basefee > 0 ? block.basefee * 2 : 30e9; // Default 30 gwei
-        uint256 gasCostInWei = gasPriceWei * estimatedGasLimit;
-        
-        // Calcular threshold em tokens (gas cost * multiplier)
-        // Formula: threshold = (gasCostInWei * gasMultiplier) / tokenPriceInWei
-        uint256 threshold0 = (gasCostInWei * gasMultiplier * 1e18) / token0PriceInWei;
-        uint256 threshold1 = (gasCostInWei * gasMultiplier * 1e18) / token1PriceInWei;
-        
-        poolConfigs[poolId] = PoolConfig({
-            compoundThreshold0: threshold0,
-            compoundThreshold1: threshold1,
-            enabled: enabled,
-            gasMultiplier: gasMultiplier
-        });
-        
-        emit CompoundThresholdUpdated(poolId, threshold0);
-    }
-    
-    /// @notice Versão simplificada: Configura com 10x o custo de gas usando preços em ETH
-    /// @dev Versão mais fácil de usar - assume ambos os tokens têm preço similar em ETH
-    /// @param key A chave da pool
-    /// @param estimatedGasLimit Gas estimado para executar compound (padrão: 200000)
-    /// @param enabled Se o auto-compound está habilitado
-    function setPoolConfig10xGas(
-        PoolKey calldata key,
-        uint256 estimatedGasLimit,
-        bool enabled
-    ) external onlyOwner {
-        PoolId poolId = key.toId();
-        
-        // Calcular custo de gas em wei
-        // Usa block.basefee * 2 como estimativa de gas price (mais confiável que tx.gasprice)
-        uint256 gasPriceWei = block.basefee > 0 ? block.basefee * 2 : 30e9; // Default 30 gwei
-        uint256 gasCostInWei = gasPriceWei * estimatedGasLimit;
-        
-        // 10x o custo de gas em wei (para ambos os tokens, assumindo preço similar)
-        uint256 threshold10x = gasCostInWei * 10;
-        
-        poolConfigs[poolId] = PoolConfig({
-            compoundThreshold0: threshold10x,
-            compoundThreshold1: threshold10x,
-            enabled: enabled,
-            gasMultiplier: 10
-        });
-        
-        emit CompoundThresholdUpdated(poolId, threshold10x);
-    }
-    
-    /// @notice Configura threshold fixo em USD para uma pool específica
-    /// @dev Versão simplificada - configura threshold em USD que será usado para ambos os tokens
-    /// @param key A chave da pool
-    /// @param thresholdUSD Valor em dólares para trigger de compound (ex: 20 = $20)
-    function setPoolConfigFixedUSD(
-        PoolKey calldata key,
-        uint256 thresholdUSD
-    ) external onlyOwner {
-        require(thresholdUSD > 0, "Threshold USD must be > 0");
-        
-        PoolId poolId = key.toId();
-        poolThresholds[poolId] = thresholdUSD;
-        
-        // Manter a configuração da pool habilitada
-        PoolConfig memory currentConfig = poolConfigs[poolId];
-        if (!currentConfig.enabled) {
-            poolConfigs[poolId] = PoolConfig({
-                compoundThreshold0: 0, // Será calculado baseado no thresholdUSD
-                compoundThreshold1: 0, // Será calculado baseado no thresholdUSD
-                enabled: true,
-                gasMultiplier: currentConfig.gasMultiplier > 0 ? currentConfig.gasMultiplier : 0
-            });
-        }
-        
-        emit CompoundThresholdUpdated(poolId, thresholdUSD);
     }
 
     /// @notice Configura preços dos tokens em USD para uma pool
@@ -278,30 +164,6 @@ contract AutoCompoundHook is BaseHook {
         PoolId poolId = key.toId();
         token0PriceUSD[poolId] = price0USD;
         token1PriceUSD[poolId] = price1USD;
-    }
-    
-    /// @notice Configura com $20 em fees (versão simplificada)
-    /// @dev Configura threshold para $20
-    /// @param key A chave da pool
-    function setPoolConfig20USD(
-        PoolKey calldata key
-    ) external onlyOwner {
-        // Configura threshold para $20 diretamente
-        PoolId poolId = key.toId();
-        poolThresholds[poolId] = 20;
-        
-        // Manter a configuração da pool habilitada
-        PoolConfig memory currentConfig = poolConfigs[poolId];
-        if (!currentConfig.enabled) {
-            poolConfigs[poolId] = PoolConfig({
-                compoundThreshold0: 0, // Será calculado baseado no thresholdUSD
-                compoundThreshold1: 0, // Será calculado baseado no thresholdUSD
-                enabled: true,
-                gasMultiplier: currentConfig.gasMultiplier > 0 ? currentConfig.gasMultiplier : 0
-            });
-        }
-        
-        emit CompoundThresholdUpdated(poolId, 20);
     }
     
     /// @notice Configura o tick range para uma pool (necessário para compound)
@@ -326,19 +188,11 @@ contract AutoCompoundHook is BaseHook {
         uint160,
         int24
     ) internal override returns (bytes4) {
-        // Opcional: inicializar configurações padrão com 10x o custo de gas
+        // Inicializar configuração padrão (habilitado)
         PoolId poolId = key.toId();
-        if (poolConfigs[poolId].compoundThreshold0 == 0) {
-            // Valores padrão: 10x o custo de gas estimado
-            uint256 gasPriceWei = block.basefee > 0 ? block.basefee * 2 : 30e9; // Default 30 gwei
-            uint256 estimatedGasCost = gasPriceWei * 200000; // ~200k gas para compound
-            uint256 defaultThreshold = estimatedGasCost * 10; // 10x o custo de gas
-            
+        if (!poolConfigs[poolId].enabled) {
             poolConfigs[poolId] = PoolConfig({
-                compoundThreshold0: defaultThreshold,
-                compoundThreshold1: defaultThreshold,
-                enabled: true,
-                gasMultiplier: 10
+                enabled: true
             });
         }
         return this.afterInitialize.selector;
@@ -735,9 +589,8 @@ contract AutoCompoundHook is BaseHook {
             return (false, "Token prices not configured", 0, 0, gasCostUSD);
         }
 
-        // Verificar se fees >= 20x custo de gas
+        // Verificar se fees >= 20x custo de gas (calculado automaticamente)
         if (feesValueUSD < gasCostUSD * MIN_FEES_MULTIPLIER) {
-            uint256 requiredUSD = gasCostUSD * MIN_FEES_MULTIPLIER;
             return (false, "Fees less than 20x gas cost", 0, feesValueUSD, gasCostUSD);
         }
 
