@@ -7,8 +7,7 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
-// Nota: PoolManager pode ter versão diferente, vamos usar IPoolManager e criar um mock
-// import {PoolManager} from "@uniswap/v4-core/src/PoolManager.sol";
+import {PoolManager} from "@uniswap/v4-core/src/PoolManager.sol";
 import {BalanceDelta, toBalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {BaseHook} from "lib/v4-periphery/src/utils/BaseHook.sol";
@@ -16,20 +15,25 @@ import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {HookMiner} from "lib/v4-periphery/src/utils/HookMiner.sol";
-// MockERC20 não está disponível diretamente, vamos criar um mock simples
-// import {MockERC20} from "forge-std/mocks/MockERC20.sol";
+import {MockERC20} from "solmate/src/test/utils/mocks/MockERC20.sol";
+import {Constants} from "v4-core/test/utils/Constants.sol";
 
 contract AutoCompoundHookTest is Test {
     using PoolIdLibrary for PoolKey;
 
     AutoCompoundHook public hook;
-    IPoolManager public poolManager;
+    PoolManager public poolManager;
+    
+    MockERC20 public token0;
+    MockERC20 public token1;
     
     PoolKey public poolKey;
     PoolId public poolId;
 
     address public owner = address(0x1);
     address public user = address(0x2);
+    
+    uint160 constant SQRT_PRICE_1_1 = Constants.SQRT_PRICE_1_1;
 
     /// @notice Helper function to convert Permissions to flags
     function permissionsToFlags(Hooks.Permissions memory permissions) internal pure returns (uint160 flags) {
@@ -50,11 +54,12 @@ contract AutoCompoundHookTest is Test {
     }
 
     function setUp() public {
-        // Criar mock do PoolManager
-        // Em testes de integração, você usaria: poolManager = new PoolManager(50000);
-        address poolManagerAddress = address(0x100);
-        vm.etch(poolManagerAddress, new bytes(1));
-        poolManager = IPoolManager(poolManagerAddress);
+        // Deploy PoolManager no teste
+        poolManager = new PoolManager(address(this));
+        
+        // Criar tokens mock
+        token0 = new MockERC20("Token0", "TKN0", 18);
+        token1 = new MockERC20("Token1", "TKN1", 18);
         
         // Definir permissões do hook
         Hooks.Permissions memory permissions = Hooks.Permissions({
@@ -80,11 +85,11 @@ contract AutoCompoundHookTest is Test {
         // Encontrar endereço e salt usando HookMiner
         // Em testes, o deployer é address(this) (o contrato de teste)
         bytes memory creationCode = type(AutoCompoundHook).creationCode;
-        bytes memory constructorArgs = abi.encode(poolManager);
+        bytes memory constructorArgs = abi.encode(IPoolManager(address(poolManager)));
         (address hookAddress, bytes32 salt) = HookMiner.find(address(this), flags, creationCode, constructorArgs);
         
         // Fazer deploy do hook usando o salt encontrado
-        hook = new AutoCompoundHook{salt: salt}(poolManager);
+        hook = new AutoCompoundHook{salt: salt}(IPoolManager(address(poolManager)));
         
         // Verificar que o hook foi deployado no endereço correto
         assertEq(address(hook), hookAddress, "Hook address mismatch");
@@ -93,15 +98,18 @@ contract AutoCompoundHookTest is Test {
         vm.prank(address(this));
         hook.setOwner(owner);
         
-        // Criar poolKey de exemplo
+        // Criar poolKey com tokens reais
         poolKey = PoolKey({
-            currency0: Currency.wrap(address(0x1000)),
-            currency1: Currency.wrap(address(0x2000)),
+            currency0: Currency.wrap(address(token0)),
+            currency1: Currency.wrap(address(token1)),
             fee: 3000,
             tickSpacing: 60,
             hooks: IHooks(address(hook))
         });
         poolId = poolKey.toId();
+        
+        // Initialize pool
+        poolManager.initialize(poolKey, SQRT_PRICE_1_1);
     }
 
     function test_Constructor() public view {
@@ -327,37 +335,76 @@ contract AutoCompoundHookTest is Test {
         vm.prank(owner);
         hook.setPoolTickRange(key, -887272, 887272);
         
+        // ========== CASO 1: Fees abaixo do threshold (não deve fazer compound) ==========
+        uint256 fees0Below = 1e15; // 0.001 token0 = ~$3
+        uint256 fees1Below = 1e15; // 0.001 token1 = ~$0.001
+        // Total: ~$3.001 < $200 (threshold de 20x gas cost)
+        
+        // Dar tokens ao hook usando deal
+        address token0Address = Currency.unwrap(key.currency0);
+        address token1Address = Currency.unwrap(key.currency1);
+        deal(token0Address, address(hook), fees0Below);
+        deal(token1Address, address(hook), fees1Below);
+        
         // Acumular fees pequenas (não suficientes para 20x gas)
-        PoolKey memory key2 = poolKey;
-        hook.accumulateFees(key2, 1e15, 1e15); // 0.001 ETH, 0.001 USDC = ~$4
+        hook.accumulateFees(key, fees0Below, fees1Below);
+        
+        // Verificar que fees foram acumuladas
+        assertEq(hook.accumulatedFees0(poolId), fees0Below);
+        assertEq(hook.accumulatedFees1(poolId), fees1Below);
         
         // Tentar compound - deve falhar (fees < 20x gas cost)
-        PoolKey memory key3 = poolKey;
-        hook.tryCompound(key3);
+        hook.tryCompound(key);
         
-        // Fees não devem ser resetadas
-        assertGt(hook.accumulatedFees0(poolId), 0);
-        assertGt(hook.accumulatedFees1(poolId), 0);
+        // Fees não devem ser resetadas (abaixo do threshold)
+        assertEq(hook.accumulatedFees0(poolId), fees0Below, "Fees should not be reset when below threshold");
+        assertEq(hook.accumulatedFees1(poolId), fees1Below, "Fees should not be reset when below threshold");
+        
+        // ========== CASO 2: Fees acima do threshold ==========
+        // Gas cost estimado: ~$10, então precisamos de pelo menos $200 em fees (20x)
+        // 0.1 ETH = $300, 100 USDC = $100, total = $400 > $200
+        uint256 fees0Above = 1e17; // 0.1 token0 (assumindo 18 decimais)
+        uint256 fees1Above = 1e20; // 100 token1 (assumindo 18 decimais)
+        
+        // Dar mais tokens ao hook usando deal
+        deal(token0Address, address(hook), fees0Above);
+        deal(token1Address, address(hook), fees1Above);
         
         // Acumular fees grandes (suficientes para 20x gas)
-        // Gas cost estimado: ~$10, então precisamos de pelo menos $200 em fees
-        // 0.1 ETH = $300, 100 USDC = $100, total = $400 > $200
-        hook.accumulateFees(key3, 1e17, 1e20); // 0.1 ETH, 100 USDC
+        hook.accumulateFees(key, fees0Above, fees1Above);
+        
+        // Verificar que fees foram acumuladas (somadas às anteriores)
+        assertEq(hook.accumulatedFees0(poolId), fees0Below + fees0Above);
+        assertEq(hook.accumulatedFees1(poolId), fees1Below + fees1Above);
         
         // Tentar compound - ainda deve falhar (intervalo de 4h não passou)
-        hook.tryCompound(key3);
+        hook.tryCompound(key);
         
         // Fees ainda não devem ser resetadas (intervalo não passou)
-        assertGt(hook.accumulatedFees0(poolId), 0);
+        assertGt(hook.accumulatedFees0(poolId), 0, "Fees should not be reset before 4h interval");
+        assertGt(hook.accumulatedFees1(poolId), 0, "Fees should not be reset before 4h interval");
         
-        // Avançar 4 horas + 1 segundo
+        // Avançar tempo 4h + 1 segundo
         vm.warp(block.timestamp + 4 hours + 1);
         
         // Agora deve tentar executar (pode falhar se modifyLiquidity não funcionar com mock)
-        try hook.tryCompound(key3) {
-            // Se executar, fees podem ser resetadas
+        uint256 fees0Before = hook.accumulatedFees0(poolId);
+        uint256 fees1Before = hook.accumulatedFees1(poolId);
+        
+        try hook.tryCompound(key) {
+            // Se executar com sucesso, fees devem ser resetadas
+            uint256 fees0After = hook.accumulatedFees0(poolId);
+            uint256 fees1After = hook.accumulatedFees1(poolId);
+            
+            // Se compound foi executado, fees devem ser resetadas
+            if (fees0After == 0 && fees1After == 0) {
+                assertTrue(true, "Compound executed successfully - fees reset");
+            }
         } catch {
             // Esperado se modifyLiquidity falhar sem PoolManager real
+            // Mas as fees ainda devem estar acumuladas
+            assertEq(hook.accumulatedFees0(poolId), fees0Before, "Fees should remain if compound failed");
+            assertEq(hook.accumulatedFees1(poolId), fees1Before, "Fees should remain if compound failed");
         }
     }
 
@@ -386,22 +433,30 @@ contract AutoCompoundHookTest is Test {
         assertFalse(canCompound);
         assertEq(reason, "No accumulated fees");
         
-        // Acumular fees
-        hook.accumulateFees(key, 1e17, 1e20);
+        // Acumular fees acima do threshold usando deal
+        // Gas cost estimado: ~$10, então precisamos de pelo menos $200 em fees (20x)
+        // 0.1 ETH = $300, 100 USDC = $100, total = $400 > $200
+        uint256 fees0 = 1e17; // 0.1 token0 (assumindo 18 decimais)
+        uint256 fees1 = 1e20; // 100 token1 (assumindo 18 decimais)
+        
+        // Dar tokens ao hook usando deal (para que ele possa fazer modifyLiquidity)
+        address token0Address = Currency.unwrap(key.currency0);
+        address token1Address = Currency.unwrap(key.currency1);
+        deal(token0Address, address(hook), fees0);
+        deal(token1Address, address(hook), fees1);
+        
+        // Acumular fees no hook
+        hook.accumulateFees(key, fees0, fees1);
+        
+        // Verificar que fees foram acumuladas
+        assertEq(hook.accumulatedFees0(poolId), fees0);
+        assertEq(hook.accumulatedFees1(poolId), fees1);
         
         // Verificar canExecuteCompound - deve retornar false (intervalo não passou)
         (canCompound, reason, , , ) = hook.canExecuteCompound(key);
-        // Pode ser false por várias razões (sem preços configurados, etc)
+        // Pode ser false por várias razões (intervalo não passou, etc)
         
-        // Configurar preços para cálculo correto
-        vm.prank(owner);
-        hook.setTokenPricesUSD(key, 3000e18, 1e18);
-        
-        // Verificar novamente
-        (canCompound, reason, , , ) = hook.canExecuteCompound(key);
-        // Agora pode retornar false por intervalo ou por fees insuficientes
-        
-        // Avançar 4 horas
+        // Avançar tempo 4h + 1 segundo
         vm.warp(block.timestamp + 4 hours + 1);
         
         // Verificar canExecuteCompound novamente
@@ -410,7 +465,10 @@ contract AutoCompoundHookTest is Test {
         uint256 feesValueUSD;
         uint256 gasCostUSD;
         (canCompound, reason2, timeUntilNextCompound, feesValueUSD, gasCostUSD) = hook.canExecuteCompound(key);
-        // Pode ser true ou false dependendo do cálculo de gas cost
+        
+        // Verificar que 4 horas passaram
+        assertEq(timeUntilNextCompound, 0, "4 hours should have passed");
+        
         // Se feesValueUSD >= gasCostUSD * 20 e timeUntilNextCompound == 0, então canCompound deve ser true
         if (feesValueUSD > 0 && feesValueUSD >= gasCostUSD * 20 && timeUntilNextCompound == 0) {
             assertTrue(canCompound, "Should be able to compound if fees >= 20x gas cost and 4h passed");

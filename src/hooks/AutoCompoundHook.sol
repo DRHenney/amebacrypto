@@ -346,6 +346,9 @@ contract AutoCompoundHook is BaseHook {
 
     /// @notice Callback após remover liquidez
     /// @dev Captura 10% das fees geradas e converte para USDC, enviando para FEE_RECIPIENT
+    // modifier onlyPoolManager {
+    //     require(msg.sender == address(poolManager), "Not PoolManager");
+    // }
     function _afterRemoveLiquidity(
         address,
         PoolKey calldata key,
@@ -354,6 +357,12 @@ contract AutoCompoundHook is BaseHook {
         BalanceDelta feesAccrued,
         bytes calldata
     ) internal override returns (bytes4, BalanceDelta) {
+        // modifier onlyPoolManager {
+        //     require(msg.sender == address(poolManager), "Not PoolManager");
+        // }
+        // Temporariamente comentado para teste local:
+        // require(msg.sender == address(poolManager), "Not PoolManager");
+        
         // Extrair as fees acumuladas do BalanceDelta
         int128 fees0 = feesAccrued.amount0();
         int128 fees1 = feesAccrued.amount1();

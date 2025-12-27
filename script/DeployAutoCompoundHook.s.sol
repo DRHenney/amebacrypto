@@ -5,7 +5,7 @@ import {Script, console2} from "forge-std/Script.sol";
 import {AutoCompoundHook} from "../src/hooks/AutoCompoundHook.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
-import {HookMiner} from "lib/v4-periphery/src/utils/HookMiner.sol";
+import {HookMiner} from "v4-periphery/src/utils/HookMiner.sol";
 
 contract DeployAutoCompoundHook is Script {
     address constant CREATE2_DEPLOYER = address(0x4e59b44847b379578588920cA78FbF26c0B4956C);
