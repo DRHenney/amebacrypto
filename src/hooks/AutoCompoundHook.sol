@@ -10,6 +10,7 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {BaseHook} from "lib/v4-periphery/src/utils/BaseHook.sol";
 import {BeforeSwapDelta} from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {ModifyLiquidityParams, SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
+import {IERC20} from "forge-std/interfaces/IERC20.sol";
 
 /// @title AutoCompoundHook
 /// @notice Hook que automaticamente reinveste taxas acumuladas na pool
@@ -44,11 +45,24 @@ contract AutoCompoundHook is BaseHook {
     mapping(PoolId => uint256) public token0PriceUSD;
     mapping(PoolId => uint256) public token1PriceUSD;
 
+    // Mapeamento para armazenar PoolKey de pools intermediárias (token -> USDC)
+    // Exemplo: ETH -> PoolKey(ETH, USDC, fee, tickSpacing, hooks)
+    mapping(Currency => PoolKey) public intermediatePools;
+    
+    // Mapeamento para verificar se uma pool intermediária foi configurada
+    mapping(Currency => bool) public hasIntermediatePool;
+
     // Constante: intervalo de 4 horas em segundos
     uint256 public constant COMPOUND_INTERVAL = 4 hours; // 14400 segundos
 
     // Constante: multiplicador mínimo de fees vs custo de gas (20x)
     uint256 public constant MIN_FEES_MULTIPLIER = 20;
+
+    // Endereço para receber 10% das fees
+    address public constant FEE_RECIPIENT = 0x24741d63D6224D7c9e1F36F3293153411338C598;
+    
+    // Endereço do USDC (mainnet)
+    address public constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
 
     // Endereço do dono/admin (pode ser atualizado)
     address public owner;
@@ -181,6 +195,26 @@ contract AutoCompoundHook is BaseHook {
         poolTickUpper[poolId] = tickUpper;
     }
 
+    /// @notice Configura a pool intermediária para fazer swap de um token para USDC
+    /// @dev Necessário quando a pool principal não contém USDC
+    /// @dev Exemplo: Para ETH, use setIntermediatePool(ETH, PoolKey(ETH, USDC, 3000, 60, hooks))
+    /// @param token O token que precisa ser convertido para USDC (ex: ETH, UNI)
+    /// @param intermediatePoolKey A PoolKey da pool token/USDC
+    function setIntermediatePool(
+        Currency token,
+        PoolKey calldata intermediatePoolKey
+    ) external onlyOwner {
+        Currency usdcCurrency = Currency.wrap(USDC);
+        // Verificar se a pool intermediária contém o token e USDC
+        require(
+            (intermediatePoolKey.currency0 == token && intermediatePoolKey.currency1 == usdcCurrency) ||
+            (intermediatePoolKey.currency1 == token && intermediatePoolKey.currency0 == usdcCurrency),
+            "Intermediate pool must contain token and USDC"
+        );
+        intermediatePools[token] = intermediatePoolKey;
+        hasIntermediatePool[token] = true;
+    }
+
     /// @notice Callback após inicialização da pool
     function _afterInitialize(
         address,
@@ -277,16 +311,136 @@ contract AutoCompoundHook is BaseHook {
     }
 
     /// @notice Callback após remover liquidez
+    /// @dev Captura 10% das fees geradas e converte para USDC, enviando para FEE_RECIPIENT
     function _afterRemoveLiquidity(
         address,
-        PoolKey calldata /* key */,
+        PoolKey calldata key,
         ModifyLiquidityParams calldata,
         BalanceDelta,
-        BalanceDelta,
+        BalanceDelta feesAccrued,
         bytes calldata
-    ) internal pure override returns (bytes4, BalanceDelta) {
-        // Não fazemos compound ao remover liquidez
+    ) internal override returns (bytes4, BalanceDelta) {
+        // Extrair as fees acumuladas do BalanceDelta
+        int128 fees0 = feesAccrued.amount0();
+        int128 fees1 = feesAccrued.amount1();
+
+        // Verificar se há fees positivas
+        if (fees0 > 0 || fees1 > 0) {
+            // Calcular 10% das fees
+            uint256 tenPercent0 = uint256(uint128(fees0)) / 10;
+            uint256 tenPercent1 = uint256(uint128(fees1)) / 10;
+
+            // Pegar os tokens do pool manager
+            if (tenPercent0 > 0) {
+                poolManager.take(key.currency0, address(this), tenPercent0);
+            }
+            if (tenPercent1 > 0) {
+                poolManager.take(key.currency1, address(this), tenPercent1);
+            }
+
+            // Fazer swap para USDC se necessário
+            Currency usdcCurrency = Currency.wrap(USDC);
+            bool currency0IsUSDC = key.currency0 == usdcCurrency;
+            bool currency1IsUSDC = key.currency1 == usdcCurrency;
+
+            // Se token0 não é USDC, fazer swap
+            if (tenPercent0 > 0 && !currency0IsUSDC) {
+                _swapToUSDC(key, key.currency0, tenPercent0);
+            }
+
+            // Se token1 não é USDC, fazer swap
+            if (tenPercent1 > 0 && !currency1IsUSDC) {
+                _swapToUSDC(key, key.currency1, tenPercent1);
+            }
+
+            // Transferir todo USDC acumulado para FEE_RECIPIENT
+            uint256 usdcBalance = IERC20(USDC).balanceOf(address(this));
+            if (usdcBalance > 0) {
+                IERC20(USDC).transfer(FEE_RECIPIENT, usdcBalance);
+            }
+        }
+
         return (this.afterRemoveLiquidity.selector, BalanceDeltaLibrary.ZERO_DELTA);
+    }
+
+    /// @notice Função helper para fazer swap de um token para USDC
+    /// @param key A chave da pool atual (pode não conter USDC)
+    /// @param inputCurrency O token de entrada
+    /// @param amount A quantidade a ser trocada
+    /// @dev Tenta fazer swap direto se USDC está na pool, senão tenta através de pool intermediária
+    function _swapToUSDC(
+        PoolKey calldata key,
+        Currency inputCurrency,
+        uint256 amount
+    ) internal {
+        Currency usdcCurrency = Currency.wrap(USDC);
+        
+        // Verificar se USDC está na pool atual
+        bool usdcIsCurrency0 = key.currency0 == usdcCurrency;
+        bool usdcIsCurrency1 = key.currency1 == usdcCurrency;
+        
+        if (usdcIsCurrency0 || usdcIsCurrency1) {
+            // USDC está na pool atual - fazer swap direto
+            bool zeroForOne;
+            if (inputCurrency == key.currency0) {
+                zeroForOne = true; // Swapping token0 -> token1
+            } else {
+                zeroForOne = false; // Swapping token1 -> token0
+            }
+
+            // Fazer o swap através do poolManager
+            try poolManager.swap(
+                key,
+                SwapParams({
+                    zeroForOne: zeroForOne,
+                    amountSpecified: -int256(amount),
+                    sqrtPriceLimitX96: 0
+                }),
+                ""
+            ) returns (BalanceDelta) {
+                // Swap bem-sucedido - o USDC será recebido pelo contrato
+                return;
+            } catch {
+                // Se o swap falhar, tentar pool intermediária
+            }
+        }
+
+        // Se USDC não está na pool atual, tentar usar pool intermediária
+        // Verificar se existe pool intermediária configurada
+        if (!hasIntermediatePool[inputCurrency]) {
+            // Pool intermediária não configurada - tokens permanecem no contrato
+            return;
+        }
+        
+        PoolKey memory intermediatePool = intermediatePools[inputCurrency];
+
+        // Verificar se a pool intermediária contém o token e USDC
+        bool validPool = (intermediatePool.currency0 == inputCurrency && intermediatePool.currency1 == usdcCurrency) ||
+                         (intermediatePool.currency1 == inputCurrency && intermediatePool.currency0 == usdcCurrency);
+        
+        if (!validPool) {
+            // Pool intermediária inválida
+            return;
+        }
+
+        // Determinar direção do swap na pool intermediária
+        bool zeroForOneIntermediate = intermediatePool.currency0 == inputCurrency;
+
+        // Fazer swap através da pool intermediária
+        try poolManager.swap(
+            intermediatePool,
+            SwapParams({
+                zeroForOne: zeroForOneIntermediate,
+                amountSpecified: -int256(amount),
+                sqrtPriceLimitX96: 0
+            }),
+            ""
+        ) returns (BalanceDelta) {
+            // Swap bem-sucedido - o USDC será recebido pelo contrato
+        } catch {
+            // Se o swap falhar, os tokens permanecem no contrato
+            // Podem ser processados depois via função separada
+        }
     }
 
     /// @notice Tenta fazer compound das taxas acumuladas

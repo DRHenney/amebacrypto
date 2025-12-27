@@ -12,6 +12,16 @@ import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {BaseHook} from "lib/v4-periphery/src/utils/BaseHook.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 
+/// @notice Test version of AutoCompoundHook that skips address validation
+contract AutoCompoundHookTestImpl is AutoCompoundHook {
+    constructor(IPoolManager _poolManager) AutoCompoundHook(_poolManager) {}
+    
+    /// @notice Override to skip validation in tests
+    function validateHookAddress(BaseHook _this) internal pure override {
+        // Skip validation in tests
+    }
+}
+
 contract AutoCompoundHookTest is Test {
     using PoolIdLibrary for PoolKey;
 
@@ -30,8 +40,9 @@ contract AutoCompoundHookTest is Test {
         // Por enquanto, apenas criamos um endereço mock
         vm.etch(mockPoolManager, new bytes(1));
         
+        // Fazer deploy usando a versão de teste que não valida o endereço
         vm.prank(owner);
-        hook = new AutoCompoundHook(IPoolManager(mockPoolManager));
+        hook = new AutoCompoundHookTestImpl(IPoolManager(mockPoolManager));
         
         // Criar poolKey de exemplo
         poolKey = PoolKey({
