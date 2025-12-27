@@ -494,6 +494,9 @@ contract AutoCompoundHookTest is Test {
 
     /// @notice Teste adicional: setIntermediatePool
     function test_SetIntermediatePool() public {
+        // Configurar chainid para Sepolia (testnet) para que USDC() funcione
+        vm.chainId(11155111);
+        
         PoolKey memory key = poolKey;
         
         // Criar pool intermediária ETH/USDC

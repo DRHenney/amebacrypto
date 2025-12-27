@@ -61,8 +61,42 @@ contract AutoCompoundHook is BaseHook {
     // Endereço para receber 10% das fees
     address public constant FEE_RECIPIENT = 0x24741d63D6224D7c9e1F36F3293153411338C598;
     
-    // Endereço do USDC (mainnet)
-    address public constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    /// @notice Retorna o endereço do USDC baseado na rede atual
+    /// @dev Endereços USDC por rede (atualizado 26/12/2025)
+    /// @return O endereço do USDC na rede atual
+    function USDC() public view returns (address) {
+        uint256 chainId = block.chainid;
+        
+        // Ethereum Mainnet
+        if (chainId == 1) return 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+        // Sepolia (testnet)
+        if (chainId == 11155111) return 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
+        // Arbitrum One
+        if (chainId == 42161) return 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
+        // Optimism
+        if (chainId == 10) return 0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85;
+        // Base
+        if (chainId == 8453) return 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+        // Polygon
+        if (chainId == 137) return 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359;
+        // Unichain Mainnet
+        if (chainId == 1301) return 0x078D782b760474a361dDA0AF3839290b0EF57AD6;
+        // Unichain Sepolia (testnet)
+        if (chainId == 13011301) return 0x31d0220469e10c4E71834a79b1f276d740d3768F;
+        // zkSync Era
+        if (chainId == 324) return 0x3355df6D4c9C3035724Fd0e3914dE96A5a83aaf4;
+        // Scroll
+        if (chainId == 534352) return 0x06eFdBFf2a14a7c8E15944D1F4A48F9F95F663A4;
+        // Linea
+        if (chainId == 59144) return 0x176211869cA2b568f2A7D4EE941E073a821EE1ff;
+        // BSC (Binance Smart Chain)
+        if (chainId == 56) return 0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d;
+        // Avalanche
+        if (chainId == 43114) return 0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E;
+        
+        // Default (revert se rede não suportada)
+        revert("USDC not configured for this chain");
+    }
 
     // Endereço do dono/admin (pode ser atualizado)
     address public owner;
@@ -204,7 +238,7 @@ contract AutoCompoundHook is BaseHook {
         Currency token,
         PoolKey calldata intermediatePoolKey
     ) external onlyOwner {
-        Currency usdcCurrency = Currency.wrap(USDC);
+        Currency usdcCurrency = Currency.wrap(USDC());
         // Verificar se a pool intermediária contém o token e USDC
         require(
             (intermediatePoolKey.currency0 == token && intermediatePoolKey.currency1 == usdcCurrency) ||
@@ -339,7 +373,7 @@ contract AutoCompoundHook is BaseHook {
             }
 
             // Fazer swap para USDC se necessário
-            Currency usdcCurrency = Currency.wrap(USDC);
+            Currency usdcCurrency = Currency.wrap(USDC());
             bool currency0IsUSDC = key.currency0 == usdcCurrency;
             bool currency1IsUSDC = key.currency1 == usdcCurrency;
 
@@ -354,9 +388,9 @@ contract AutoCompoundHook is BaseHook {
             }
 
             // Transferir todo USDC acumulado para FEE_RECIPIENT
-            uint256 usdcBalance = IERC20(USDC).balanceOf(address(this));
+            uint256 usdcBalance = IERC20(USDC()).balanceOf(address(this));
             if (usdcBalance > 0) {
-                IERC20(USDC).transfer(FEE_RECIPIENT, usdcBalance);
+                IERC20(USDC()).transfer(FEE_RECIPIENT, usdcBalance);
             }
         }
 
@@ -373,7 +407,7 @@ contract AutoCompoundHook is BaseHook {
         Currency inputCurrency,
         uint256 amount
     ) internal {
-        Currency usdcCurrency = Currency.wrap(USDC);
+        Currency usdcCurrency = Currency.wrap(USDC());
         
         // Verificar se USDC está na pool atual
         bool usdcIsCurrency0 = key.currency0 == usdcCurrency;
