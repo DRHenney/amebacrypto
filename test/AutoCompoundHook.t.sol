@@ -29,9 +29,27 @@ contract AutoCompoundHookTest is Test {
     address public owner = address(0x1);
     address public user = address(0x2);
 
+    /// @notice Helper function to convert Permissions to flags
+    function permissionsToFlags(Hooks.Permissions memory permissions) internal pure returns (uint160 flags) {
+        if (permissions.beforeInitialize) flags |= Hooks.BEFORE_INITIALIZE_FLAG;
+        if (permissions.afterInitialize) flags |= Hooks.AFTER_INITIALIZE_FLAG;
+        if (permissions.beforeAddLiquidity) flags |= Hooks.BEFORE_ADD_LIQUIDITY_FLAG;
+        if (permissions.afterAddLiquidity) flags |= Hooks.AFTER_ADD_LIQUIDITY_FLAG;
+        if (permissions.beforeRemoveLiquidity) flags |= Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG;
+        if (permissions.afterRemoveLiquidity) flags |= Hooks.AFTER_REMOVE_LIQUIDITY_FLAG;
+        if (permissions.beforeSwap) flags |= Hooks.BEFORE_SWAP_FLAG;
+        if (permissions.afterSwap) flags |= Hooks.AFTER_SWAP_FLAG;
+        if (permissions.beforeDonate) flags |= Hooks.BEFORE_DONATE_FLAG;
+        if (permissions.afterDonate) flags |= Hooks.AFTER_DONATE_FLAG;
+        if (permissions.beforeSwapReturnDelta) flags |= Hooks.BEFORE_SWAP_RETURNS_DELTA_FLAG;
+        if (permissions.afterSwapReturnDelta) flags |= Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG;
+        if (permissions.afterAddLiquidityReturnDelta) flags |= Hooks.AFTER_ADD_LIQUIDITY_RETURNS_DELTA_FLAG;
+        if (permissions.afterRemoveLiquidityReturnDelta) flags |= Hooks.AFTER_REMOVE_LIQUIDITY_RETURNS_DELTA_FLAG;
+    }
+
     function setUp() public {
         // Criar mock do PoolManager
-        // Em testes de integração, você usaria um PoolManager real
+        // Em testes de integração, você usaria: poolManager = new PoolManager(50000);
         address poolManagerAddress = address(0x100);
         vm.etch(poolManagerAddress, new bytes(1));
         poolManager = IPoolManager(poolManagerAddress);
@@ -54,29 +72,22 @@ contract AutoCompoundHookTest is Test {
             afterRemoveLiquidityReturnDelta: false
         });
         
-        // Calcular flags baseado nas permissões
-        uint160 flags = 0;
-        if (permissions.afterInitialize) flags |= Hooks.AFTER_INITIALIZE_FLAG;
-        if (permissions.afterAddLiquidity) flags |= Hooks.AFTER_ADD_LIQUIDITY_FLAG;
-        if (permissions.afterRemoveLiquidity) flags |= Hooks.AFTER_REMOVE_LIQUIDITY_FLAG;
-        if (permissions.afterSwap) flags |= Hooks.AFTER_SWAP_FLAG;
+        // Converter permissões para flags
+        uint160 flags = permissionsToFlags(permissions);
         
         // Encontrar endereço e salt usando HookMiner
         // Em testes, o deployer é address(this) (o contrato de teste)
         bytes memory creationCode = type(AutoCompoundHook).creationCode;
-        bytes memory constructorArgs = abi.encode(IPoolManager(address(poolManager)));
+        bytes memory constructorArgs = abi.encode(poolManager);
         (address hookAddress, bytes32 salt) = HookMiner.find(address(this), flags, creationCode, constructorArgs);
         
         // Fazer deploy do hook usando o salt encontrado
-        // Não usar prank aqui, pois o deployer precisa ser address(this) para o HookMiner funcionar
-        hook = new AutoCompoundHook{salt: salt}(IPoolManager(address(poolManager)));
+        hook = new AutoCompoundHook{salt: salt}(poolManager);
         
         // Verificar que o hook foi deployado no endereço correto
         assertEq(address(hook), hookAddress, "Hook address mismatch");
         
-        // Transferir ownership para o owner (se necessário)
-        // O owner já é setado no construtor como msg.sender, então será address(this)
-        // Se quiser que seja owner, precisamos fazer setOwner depois
+        // Transferir ownership para o owner
         vm.prank(address(this));
         hook.setOwner(owner);
         
