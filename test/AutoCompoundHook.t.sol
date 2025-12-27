@@ -7,22 +7,15 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
+// Nota: PoolManager pode ter versão diferente, vamos usar IPoolManager e criar um mock
+// import {PoolManager} from "@uniswap/v4-core/src/PoolManager.sol";
 import {BalanceDelta, toBalanceDelta, BalanceDeltaLibrary} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {Hooks} from "@uniswap/v4-core/src/libraries/Hooks.sol";
 import {BaseHook} from "lib/v4-periphery/src/utils/BaseHook.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {SwapParams, ModifyLiquidityParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
-
-/// @notice Test version of AutoCompoundHook that skips address validation
-contract AutoCompoundHookTestImpl is AutoCompoundHook {
-    constructor(IPoolManager _poolManager) AutoCompoundHook(_poolManager) {}
-    
-    /// @notice Override to skip validation in tests
-    function validateHookAddress(BaseHook _this) internal pure override {
-        // Skip validation in tests
-    }
-}
+import {HookMiner} from "lib/v4-periphery/src/utils/HookMiner.sol";
 
 contract AutoCompoundHookTest is Test {
     using PoolIdLibrary for PoolKey;
@@ -35,16 +28,57 @@ contract AutoCompoundHookTest is Test {
 
     address public owner = address(0x1);
     address public user = address(0x2);
-    address public mockPoolManager = address(0x100);
 
     function setUp() public {
-        // Criar mock do PoolManager (em testes reais, você usaria um mock completo)
-        // Por enquanto, apenas criamos um endereço mock
-        vm.etch(mockPoolManager, new bytes(1));
+        // Criar mock do PoolManager
+        // Em testes de integração, você usaria um PoolManager real
+        address poolManagerAddress = address(0x100);
+        vm.etch(poolManagerAddress, new bytes(1));
+        poolManager = IPoolManager(poolManagerAddress);
         
-        // Fazer deploy usando a versão de teste que não valida o endereço
-        vm.prank(owner);
-        hook = new AutoCompoundHookTestImpl(IPoolManager(mockPoolManager));
+        // Definir permissões do hook
+        Hooks.Permissions memory permissions = Hooks.Permissions({
+            beforeInitialize: false,
+            afterInitialize: true,
+            beforeAddLiquidity: false,
+            afterAddLiquidity: true,
+            beforeRemoveLiquidity: false,
+            afterRemoveLiquidity: true,
+            beforeSwap: false,
+            afterSwap: true,
+            beforeDonate: false,
+            afterDonate: false,
+            beforeSwapReturnDelta: false,
+            afterSwapReturnDelta: false,
+            afterAddLiquidityReturnDelta: false,
+            afterRemoveLiquidityReturnDelta: false
+        });
+        
+        // Calcular flags baseado nas permissões
+        uint160 flags = 0;
+        if (permissions.afterInitialize) flags |= Hooks.AFTER_INITIALIZE_FLAG;
+        if (permissions.afterAddLiquidity) flags |= Hooks.AFTER_ADD_LIQUIDITY_FLAG;
+        if (permissions.afterRemoveLiquidity) flags |= Hooks.AFTER_REMOVE_LIQUIDITY_FLAG;
+        if (permissions.afterSwap) flags |= Hooks.AFTER_SWAP_FLAG;
+        
+        // Encontrar endereço e salt usando HookMiner
+        // Em testes, o deployer é address(this) (o contrato de teste)
+        bytes memory creationCode = type(AutoCompoundHook).creationCode;
+        bytes memory constructorArgs = abi.encode(IPoolManager(address(poolManager)));
+        (address hookAddress, bytes32 salt) = HookMiner.find(address(this), flags, creationCode, constructorArgs);
+        
+        // Fazer deploy do hook usando o salt encontrado
+        // Não usar prank aqui, pois o deployer precisa ser address(this) para o HookMiner funcionar
+        hook = new AutoCompoundHook{salt: salt}(IPoolManager(address(poolManager)));
+        
+        // Verificar que o hook foi deployado no endereço correto
+        assertEq(address(hook), hookAddress, "Hook address mismatch");
+        
+        // Transferir ownership para o owner (se necessário)
+        // O owner já é setado no construtor como msg.sender, então será address(this)
+        // Se quiser que seja owner, precisamos fazer setOwner depois
+        vm.prank(address(this));
+        hook.setOwner(owner);
         
         // Criar poolKey de exemplo
         poolKey = PoolKey({
@@ -59,7 +93,7 @@ contract AutoCompoundHookTest is Test {
 
     function test_Constructor() public view {
         assertEq(hook.owner(), owner);
-        assertEq(address(hook.poolManager()), mockPoolManager);
+        assertEq(address(hook.poolManager()), address(poolManager));
     }
 
     function test_SetPoolConfig() public {
@@ -257,7 +291,7 @@ contract AutoCompoundHookTest is Test {
         BalanceDelta delta = toBalanceDelta(1e15, -5e17); // fees0 positivo, fees1 negativo
         
         // Chamar afterSwap diretamente (normalmente seria chamado pelo PoolManager)
-        vm.prank(mockPoolManager);
+        vm.prank(address(poolManager));
         hook.afterSwap(address(0x123), key, swapParams, delta, "");
         
         // Verificar que fees foram acumuladas (nota: a implementação atual não acumula em afterSwap,
@@ -407,7 +441,7 @@ contract AutoCompoundHookTest is Test {
         // Chamar afterRemoveLiquidity (normalmente seria chamado pelo PoolManager)
         // Nota: Este teste falhará porque poolManager.take() precisa de um PoolManager real
         // Mas pelo menos verifica que o callback tem a estrutura correta
-        vm.prank(mockPoolManager);
+        vm.prank(address(poolManager));
         vm.expectRevert(); // Espera revert porque poolManager.take() não funciona com mock
         hook.afterRemoveLiquidity(
             address(0x123),
