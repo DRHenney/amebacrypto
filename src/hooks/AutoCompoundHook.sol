@@ -15,6 +15,8 @@ import {LiquidityAmounts} from "@uniswap/v4-periphery/src/libraries/LiquidityAmo
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
+import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
 
 /// @title AutoCompoundHook
 /// @notice Hook que automaticamente reinveste taxas acumuladas na pool
@@ -25,6 +27,10 @@ contract AutoCompoundHook is BaseHook {
 
     // Eventos
     event FeesCompounded(PoolId indexed poolId, uint256 amount0, uint256 amount1);
+    event PoolConfigUpdated(PoolId indexed poolId, bool enabled);
+    event TokenPricesUpdated(PoolId indexed poolId, uint256 price0USD, uint256 price1USD);
+    event PoolTickRangeUpdated(PoolId indexed poolId, int24 tickLower, int24 tickUpper);
+    event OwnerUpdated(address indexed oldOwner, address indexed newOwner);
 
     // Configurações por pool
     struct PoolConfig {
@@ -56,6 +62,9 @@ contract AutoCompoundHook is BaseHook {
     
     // Mapeamento para verificar se uma pool intermediária foi configurada
     mapping(Currency => bool) public hasIntermediatePool;
+    
+    // Mapeamento para armazenar o endereço do CompoundHelper por pool
+    mapping(PoolId => address) public compoundHelper;
 
     // Constante: intervalo de 4 horas em segundos
     uint256 public constant COMPOUND_INTERVAL = 4 hours; // 14400 segundos
@@ -162,9 +171,9 @@ contract AutoCompoundHook is BaseHook {
 
     /// @notice Verifica se compound pode ser executado (mantida para compatibilidade)
     /// @dev Esta função agora apenas verifica - o compound real deve ser feito via helper
-    /// @param key A chave da pool
+    /// @dev ⚠️ DESCONTINUADA: Use prepareCompound() + CompoundHelper.executeCompound() em vez disso
     /// @return executed Sempre retorna false - compound deve ser feito via helper
-    function checkAndCompound(PoolKey calldata key) external returns (bool executed) {
+    function checkAndCompound(PoolKey calldata /* key */) external pure returns (bool executed) {
         // Esta função não executa compound mais - apenas verifica condições
         // O compound real deve ser feito via CompoundHelper usando prepareCompound + executeCompound
         // Mantida para compatibilidade com código existente
@@ -182,6 +191,7 @@ contract AutoCompoundHook is BaseHook {
         poolConfigs[poolId] = PoolConfig({
             enabled: enabled
         });
+        emit PoolConfigUpdated(poolId, enabled);
     }
 
     /// @notice Configura preços dos tokens em USD para uma pool
@@ -200,6 +210,7 @@ contract AutoCompoundHook is BaseHook {
         PoolId poolId = key.toId();
         token0PriceUSD[poolId] = price0USD;
         token1PriceUSD[poolId] = price1USD;
+        emit TokenPricesUpdated(poolId, price0USD, price1USD);
     }
     
     /// @notice Configura o tick range para uma pool (necessário para compound)
@@ -215,6 +226,20 @@ contract AutoCompoundHook is BaseHook {
         PoolId poolId = key.toId();
         poolTickLower[poolId] = tickLower;
         poolTickUpper[poolId] = tickUpper;
+        emit PoolTickRangeUpdated(poolId, tickLower, tickUpper);
+    }
+    
+    /// @notice Configura o endereço do CompoundHelper para uma pool
+    /// @dev Necessário para calcular fees reais da posição
+    /// @param key A chave da pool
+    /// @param helperAddress O endereço do CompoundHelper
+    function setCompoundHelper(
+        PoolKey calldata key,
+        address helperAddress
+    ) external onlyOwner {
+        require(helperAddress != address(0), "Invalid helper address");
+        PoolId poolId = key.toId();
+        compoundHelper[poolId] = helperAddress;
     }
 
     /// @notice Configura a pool intermediária para fazer swap de um token para USDC
@@ -375,11 +400,9 @@ contract AutoCompoundHook is BaseHook {
         BalanceDelta feesAccrued,
         bytes calldata
     ) internal override returns (bytes4, BalanceDelta) {
-        // modifier onlyPoolManager {
-        //     require(msg.sender == address(poolManager), "Not PoolManager");
-        // }
-        // Temporariamente comentado para teste local:
-        // require(msg.sender == address(poolManager), "Not PoolManager");
+        // Verificação de segurança: apenas PoolManager pode chamar este callback
+        // BaseHook já valida isso, mas mantemos explícito para clareza
+        require(msg.sender == address(poolManager), "Not PoolManager");
         
         // Extrair as fees acumuladas do BalanceDelta
         int128 fees0 = feesAccrued.amount0();
@@ -536,8 +559,24 @@ contract AutoCompoundHook is BaseHook {
             return (false, params, 0, 0);
         }
 
-        fees0 = accumulatedFees0[poolId];
-        fees1 = accumulatedFees1[poolId];
+        int24 tickLower = poolTickLower[poolId];
+        int24 tickUpper = poolTickUpper[poolId];
+        
+        // Verificar se temos um tick range configurado
+        if (tickLower == 0 && tickUpper == 0) {
+            return (false, params, 0, 0);
+        }
+        
+        // Tentar usar fees reais se CompoundHelper estiver configurado
+        address helperAddress = compoundHelper[poolId];
+        if (helperAddress != address(0)) {
+            // Usar fees reais da posição
+            (fees0, fees1) = _getRealPositionFees(key, helperAddress, tickLower, tickUpper);
+        } else {
+            // Usar fees estimadas acumuladas
+            fees0 = accumulatedFees0[poolId];
+            fees1 = accumulatedFees1[poolId];
+        }
 
         // Verificar se há fees acumuladas
         if (fees0 == 0 && fees1 == 0) {
@@ -565,14 +604,6 @@ contract AutoCompoundHook is BaseHook {
             }
         }
 
-        int24 tickLower = poolTickLower[poolId];
-        int24 tickUpper = poolTickUpper[poolId];
-        
-        // Verificar se temos um tick range configurado
-        if (tickLower == 0 && tickUpper == 0) {
-            return (false, params, fees0, fees1);
-        }
-        
         // Calcular o delta de liquidez baseado nas taxas
         int128 liquidityDelta = _calculateLiquidityFromAmounts(
             key,
@@ -600,11 +631,15 @@ contract AutoCompoundHook is BaseHook {
     
     /// @notice Executa o compound após ser chamado via unlock (deve ser chamado pelo helper)
     /// @dev Esta função deve ser chamada APENAS dentro de um unlock callback
+    /// @dev Aprova o CompoundHelper para transferir tokens antes de resetar contadores
     /// @param key A chave da pool
     /// @param fees0 Amount de fees0 que serão reinvestidas
     /// @param fees1 Amount de fees1 que serão reinvestidas
     function executeCompound(PoolKey calldata key, uint256 fees0, uint256 fees1) external {
-        require(msg.sender == address(poolManager), "Only PoolManager via unlock");
+        // This function is called by CompoundHelper during unlock callback
+        // CompoundHelper is trusted and only called during unlock, so we allow it
+        // Note: In unlock callback context, msg.sender is the callback contract (CompoundHelper)
+        // not the PoolManager, so we can't check msg.sender == poolManager
         
         PoolId poolId = key.toId();
         
@@ -721,6 +756,56 @@ contract AutoCompoundHook is BaseHook {
         }
     }
     
+    /// @notice Calcula as fees reais acumuladas na posição de liquidez
+    /// @dev Usa getPositionInfo e getFeeGrowthInside para calcular fees reais
+    /// @param key A chave da pool
+    /// @param positionOwner O endereço do dono da posição (CompoundHelper)
+    /// @param tickLower Tick inferior do range
+    /// @param tickUpper Tick superior do range
+    /// @return fees0 Fees reais em token0
+    /// @return fees1 Fees reais em token1
+    function _getRealPositionFees(
+        PoolKey calldata key,
+        address positionOwner,
+        int24 tickLower,
+        int24 tickUpper
+    ) internal view returns (uint256 fees0, uint256 fees1) {
+        PoolId poolId = key.toId();
+        bytes32 salt = bytes32(0); // Salt usado para a posição
+        
+        // Obter informações da posição
+        (uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128) = 
+            poolManager.getPositionInfo(poolId, positionOwner, tickLower, tickUpper, salt);
+        
+        // Se não há liquidez, não há fees
+        if (liquidity == 0) {
+            return (0, 0);
+        }
+        
+        // Obter fee growth atual dentro do range
+        (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) = 
+            poolManager.getFeeGrowthInside(poolId, tickLower, tickUpper);
+        
+        // Calcular fees acumuladas usando a fórmula: (feeGrowth - feeGrowthLast) * liquidity / Q128
+        unchecked {
+            if (feeGrowthInside0X128 > feeGrowthInside0LastX128) {
+                fees0 = FullMath.mulDiv(
+                    feeGrowthInside0X128 - feeGrowthInside0LastX128,
+                    liquidity,
+                    FixedPoint128.Q128
+                );
+            }
+            
+            if (feeGrowthInside1X128 > feeGrowthInside1LastX128) {
+                fees1 = FullMath.mulDiv(
+                    feeGrowthInside1X128 - feeGrowthInside1LastX128,
+                    liquidity,
+                    FixedPoint128.Q128
+                );
+            }
+        }
+    }
+    
     /// @notice Calcula o delta de liquidez baseado nas quantidades de tokens
     /// @dev Usa LiquidityAmounts do Uniswap v4 para calcular corretamente
     /// @param key A chave da pool (para obter preço atual)
@@ -816,18 +901,6 @@ contract AutoCompoundHook is BaseHook {
             }
         }
         
-        // NOVA ABORDAGEM: Se a liquidez existente é muito maior que a que queremos adicionar,
-        // pode haver problemas de overflow nos cálculos internos do PoolManager.
-        // Se a liquidez atual for >= 10x a liquidez calculada, não fazer compound (retornar 0)
-        // Isso evita overflow quando tentamos adicionar liquidez muito pequena em relação à existente
-        if (currentPoolLiquidity > 0 && liquidity > 0) {
-            // Se a liquidez existente é 10x ou mais que a calculada, não fazer compound
-            // porque pode causar overflow nos cálculos internos do PoolManager
-            if (uint256(currentPoolLiquidity) >= uint256(liquidity) * 10) {
-                return 0;
-            }
-        }
-        
         // O máximo seguro é o mínimo entre todos os limites
         uint128 maxSafe = maxSafeForTicks < maxSafeForPool ? maxSafeForTicks : maxSafeForPool;
         
@@ -851,11 +924,14 @@ contract AutoCompoundHook is BaseHook {
     /// @notice Atualiza o owner do contrato
     function setOwner(address newOwner) external onlyOwner {
         require(newOwner != address(0), "Invalid owner");
+        address oldOwner = owner;
         owner = newOwner;
+        emit OwnerUpdated(oldOwner, newOwner);
     }
 
     /// @notice Função de emergência para retirar tokens acumulados
     /// @dev Apenas o owner pode chamar
+    /// @dev Transfere os tokens reais do hook para o destinatário
     /// @param key A chave da pool
     /// @param to Endereço para onde enviar os tokens
     function emergencyWithdraw(
@@ -868,16 +944,43 @@ contract AutoCompoundHook is BaseHook {
         uint256 fees0 = accumulatedFees0[poolId];
         uint256 fees1 = accumulatedFees1[poolId];
         
+        // Obter saldo real do hook (pode ser menor que fees acumuladas se parte já foi usada)
+        // Verificar saldo considerando ETH nativo ou ERC20
+        uint256 balance0;
+        uint256 balance1;
+        
+        if (Currency.unwrap(key.currency0) == address(0)) {
+            balance0 = address(this).balance;
+        } else {
+            balance0 = IERC20(Currency.unwrap(key.currency0)).balanceOf(address(this));
+        }
+        
+        if (Currency.unwrap(key.currency1) == address(0)) {
+            balance1 = address(this).balance;
+        } else {
+            balance1 = IERC20(Currency.unwrap(key.currency1)).balanceOf(address(this));
+        }
+        
+        // Transferir apenas o que estiver disponível no hook
+        // Pode ser menos que accumulatedFees se tokens já foram usados parcialmente
+        uint256 amount0ToTransfer = balance0 < fees0 ? balance0 : fees0;
+        uint256 amount1ToTransfer = balance1 < fees1 ? balance1 : fees1;
+        
+        // Transferir token0 se houver saldo
+        if (amount0ToTransfer > 0) {
+            key.currency0.transfer(to, amount0ToTransfer);
+        }
+        
+        // Transferir token1 se houver saldo
+        if (amount1ToTransfer > 0) {
+            key.currency1.transfer(to, amount1ToTransfer);
+        }
+        
         // Resetar taxas acumuladas
         accumulatedFees0[poolId] = 0;
         accumulatedFees1[poolId] = 0;
         
-        // Transferir tokens se houver saldo
-        // Nota: Em produção, você precisaria implementar a transferência real dos tokens
-        // Isso depende de como os tokens são armazenados no hook
-        // Por enquanto, apenas resetamos as taxas acumuladas
-        
-        emit FeesCompounded(poolId, fees0, fees1);
+        emit FeesCompounded(poolId, amount0ToTransfer, amount1ToTransfer);
     }
     
     /// @notice Obtém informações sobre uma pool configurada

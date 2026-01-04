@@ -29,8 +29,28 @@ forge fmt
 
 ### Deploy
 
+**Guia Completo**: Veja [GUIA-DEPLOY-TESTNET.md](./GUIA-DEPLOY-TESTNET.md) para instruções detalhadas.
+
+**Deploy Rápido**:
+
 ```shell
-forge script script/DeployAutoCompoundHook.s.sol --rpc-url <your_rpc_url> --private-key <your_private_key>
+# 1. Configure as variáveis de ambiente (.env)
+PRIVATE_KEY=sua_chave_privada
+POOL_MANAGER=endereco_do_poolmanager
+SEPOLIA_RPC_URL=https://rpc.sepolia.org
+
+# 2. Deploy do hook
+forge script script/DeployAutoCompoundHook.s.sol \
+  --rpc-url $SEPOLIA_RPC_URL \
+  --broadcast \
+  --verify \
+  -vvvv
+
+# 3. Configure o hook após deploy
+forge script script/ConfigureHook.s.sol \
+  --rpc-url $SEPOLIA_RPC_URL \
+  --broadcast \
+  -vvvv
 ```
 
 ## 🔧 Funcionalidades do Hook

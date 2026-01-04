@@ -24,15 +24,25 @@ O compound é executado automaticamente quando:
 
 ### Para Keepers (Executores)
 
-Os keepers devem chamar `checkAndCompound()` periodicamente (recomendado a cada 4 horas):
+**⚠️ IMPORTANTE**: A função `checkAndCompound()` foi descontinuada. Use o novo padrão:
 
+1. Primeiro, verifique se pode fazer compound:
+```solidity
+(bool canCompound, ModifyLiquidityParams memory params, uint256 fees0, uint256 fees1) = 
+    hook.prepareCompound(key);
+```
+
+2. Se `canCompound` for `true`, execute o compound usando `CompoundHelper`:
+```solidity
+CompoundHelper helper = new CompoundHelper(poolManager, hook);
+BalanceDelta delta = helper.executeCompound(key, params, fees0, fees1);
+```
+
+**Alternativa antiga (mantida para compatibilidade, mas não executa compound):**
 ```solidity
 function checkAndCompound(PoolKey calldata key) external returns (bool executed)
 ```
-
-**Retorno:**
-- `true`: Compound foi executado com sucesso
-- `false`: Condições não foram atendidas (intervalo de 4h ou fees insuficientes)
+**Nota**: Esta função sempre retorna `false`. Use `prepareCompound` + `CompoundHelper.executeCompound` em vez disso.
 
 ### Verificação Antes de Executar
 
@@ -96,15 +106,17 @@ function setPoolTickRange(
 
 1. **Acumulação**: As taxas são acumuladas automaticamente durante os swaps
 2. **Verificação**: Keeper verifica `canExecuteCompound()` periodicamente
-3. **Execução**: Quando condições são atendidas, keeper chama `checkAndCompound()`
-4. **Compound**: As taxas são reinvestidas como liquidez na pool
+3. **Preparação**: Quando condições são atendidas, keeper chama `prepareCompound()` para obter parâmetros
+4. **Execução**: Keeper usa `CompoundHelper.executeCompound()` para executar o compound via unlock
+5. **Compound**: As taxas são reinvestidas como liquidez na pool
 
 ## Funções Principais
 
 ### Para Keepers
-- `checkAndCompound(PoolKey)`: Executa compound se condições atendidas
+- `prepareCompound(PoolKey)`: Prepara parâmetros para compound (novo padrão)
 - `canExecuteCompound(PoolKey)`: Verifica se pode executar compound
 - `getAccumulatedFees(PoolKey)`: Obtém fees acumuladas
+- `checkAndCompound(PoolKey)`: ⚠️ Descontinuada - sempre retorna false
 
 ### Para Administradores
 - `setPoolConfig(PoolKey, bool)`: Habilita/desabilita pool
@@ -125,15 +137,24 @@ function setPoolTickRange(
 ## Exemplo de Uso para Keeper
 
 ```solidity
-// Verificar se pode executar
+// 1. Verificar se pode executar (opcional, mas recomendado)
 (bool canCompound, string memory reason, , uint256 feesUSD, uint256 gasUSD) = 
     hook.canExecuteCompound(poolKey);
 
 if (canCompound) {
-    // Executar compound
-    bool executed = hook.checkAndCompound(poolKey);
-    if (executed) {
-        // Compound executado com sucesso
+    // 2. Preparar compound para obter parâmetros
+    (bool canPrepare, ModifyLiquidityParams memory params, uint256 fees0, uint256 fees1) = 
+        hook.prepareCompound(poolKey);
+    
+    if (canPrepare) {
+        // 3. Executar compound via CompoundHelper
+        CompoundHelper helper = new CompoundHelper(poolManager, hook);
+        try helper.executeCompound(poolKey, params, fees0, fees1) returns (BalanceDelta delta) {
+            // Compound executado com sucesso!
+            // Fees foram resetadas e liquidez foi adicionada
+        } catch {
+            // Tratar erro (pode ser por falta de saldo, overflow, etc.)
+        }
     }
 } else {
     // Log do motivo (reason, feesUSD, gasUSD)

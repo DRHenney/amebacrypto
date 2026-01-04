@@ -28,7 +28,8 @@ contract DeployAutoCompoundHook is Script {
             Hooks.AFTER_SWAP_FLAG
         );
 
-        bytes memory constructorArgs = abi.encode(IPoolManager(address(poolManager)));
+        address deployerAddress = vm.addr(deployerPrivateKey);
+        bytes memory constructorArgs = abi.encode(IPoolManager(address(poolManager)), deployerAddress);
 
         // Minerar o endereço
         (address hookAddress, bytes32 salt) = HookMiner.find(
@@ -42,8 +43,10 @@ contract DeployAutoCompoundHook is Script {
         console2.log("Salt:", vm.toString(salt));
 
         // Deploy do hook usando CREATE2 com o salt minerado
+        // Pass deployer address as owner parameter
         AutoCompoundHook hook = new AutoCompoundHook{salt: salt}(
-            IPoolManager(address(poolManager))
+            IPoolManager(address(poolManager)),
+            deployerAddress
         );
 
         console2.log("AutoCompoundHook deployed at:", address(hook));
