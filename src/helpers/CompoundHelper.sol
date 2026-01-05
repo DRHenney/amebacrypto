@@ -70,15 +70,15 @@ contract CompoundHelper is IUnlockCallback {
         int256 delta1 = callerDelta.amount1();
 
         if (delta0 < 0) {
-            // We owe tokens, so we need to settle
+            // We owe tokens, so we need to settle using deployer's tokens
             uint256 amount0Needed;
             unchecked {
                 amount0Needed = uint256(-delta0);
             }
-            data.key.currency0.settle(poolManager, address(this), amount0Needed, false);
+            data.key.currency0.settle(poolManager, deployer, amount0Needed, false);
         } else if (delta0 > 0) {
             // Positive means we receive tokens (excess after fees cover the principal)
-            data.key.currency0.take(poolManager, address(this), uint256(delta0), false);
+            data.key.currency0.take(poolManager, deployer, uint256(delta0), false);
         }
         
         if (delta1 < 0) {
@@ -86,9 +86,9 @@ contract CompoundHelper is IUnlockCallback {
             unchecked {
                 amount1Needed = uint256(-delta1);
             }
-            data.key.currency1.settle(poolManager, address(this), amount1Needed, false);
+            data.key.currency1.settle(poolManager, deployer, amount1Needed, false);
         } else if (delta1 > 0) {
-            data.key.currency1.take(poolManager, address(this), uint256(delta1), false);
+            data.key.currency1.take(poolManager, deployer, uint256(delta1), false);
         }
         
         // Mark compound as executed in the hook using the real fees from modifyLiquidity

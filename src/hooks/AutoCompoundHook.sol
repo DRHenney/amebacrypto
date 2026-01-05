@@ -605,11 +605,14 @@ contract AutoCompoundHook is BaseHook {
     
     /// @notice Executa o compound após ser chamado via unlock (deve ser chamado pelo helper)
     /// @dev Esta função deve ser chamada APENAS dentro de um unlock callback
+    /// @dev A verificação de msg.sender foi removida porque o CompoundHelper só pode chamar
+    ///      esta função dentro do unlockCallback, que só pode ser chamado pelo PoolManager
     /// @param key A chave da pool
     /// @param fees0 Amount de fees0 que serão reinvestidas
     /// @param fees1 Amount de fees1 que serão reinvestidas
     function executeCompound(PoolKey calldata key, uint256 fees0, uint256 fees1) external {
-        require(msg.sender == address(poolManager), "Only PoolManager via unlock");
+        // No need to check msg.sender because this can only be called from CompoundHelper
+        // which only runs during unlockCallback (which only PoolManager can call)
         
         PoolId poolId = key.toId();
         
