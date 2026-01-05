@@ -15,8 +15,6 @@ import {LiquidityAmounts} from "@uniswap/v4-periphery/src/libraries/LiquidityAmo
 import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
 import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {SafeCast} from "@uniswap/v4-core/src/libraries/SafeCast.sol";
-import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
-import {FixedPoint128} from "@uniswap/v4-core/src/libraries/FixedPoint128.sol";
 
 /// @title AutoCompoundHook
 /// @notice Hook que automaticamente reinveste taxas acumuladas na pool
@@ -62,9 +60,6 @@ contract AutoCompoundHook is BaseHook {
     
     // Mapeamento para verificar se uma pool intermediária foi configurada
     mapping(Currency => bool) public hasIntermediatePool;
-    
-    // Mapeamento para armazenar o endereço do CompoundHelper por pool
-    mapping(PoolId => address) public compoundHelper;
 
     // Constante: intervalo de 4 horas em segundos
     uint256 public constant COMPOUND_INTERVAL = 4 hours; // 14400 segundos
@@ -227,19 +222,6 @@ contract AutoCompoundHook is BaseHook {
         poolTickLower[poolId] = tickLower;
         poolTickUpper[poolId] = tickUpper;
         emit PoolTickRangeUpdated(poolId, tickLower, tickUpper);
-    }
-    
-    /// @notice Configura o endereço do CompoundHelper para uma pool
-    /// @dev Necessário para calcular fees reais da posição
-    /// @param key A chave da pool
-    /// @param helperAddress O endereço do CompoundHelper
-    function setCompoundHelper(
-        PoolKey calldata key,
-        address helperAddress
-    ) external onlyOwner {
-        require(helperAddress != address(0), "Invalid helper address");
-        PoolId poolId = key.toId();
-        compoundHelper[poolId] = helperAddress;
     }
 
     /// @notice Configura a pool intermediária para fazer swap de um token para USDC
@@ -559,24 +541,8 @@ contract AutoCompoundHook is BaseHook {
             return (false, params, 0, 0);
         }
 
-        int24 tickLower = poolTickLower[poolId];
-        int24 tickUpper = poolTickUpper[poolId];
-        
-        // Verificar se temos um tick range configurado
-        if (tickLower == 0 && tickUpper == 0) {
-            return (false, params, 0, 0);
-        }
-        
-        // Tentar usar fees reais se CompoundHelper estiver configurado
-        address helperAddress = compoundHelper[poolId];
-        if (helperAddress != address(0)) {
-            // Usar fees reais da posição
-            (fees0, fees1) = _getRealPositionFees(key, helperAddress, tickLower, tickUpper);
-        } else {
-            // Usar fees estimadas acumuladas
-            fees0 = accumulatedFees0[poolId];
-            fees1 = accumulatedFees1[poolId];
-        }
+        fees0 = accumulatedFees0[poolId];
+        fees1 = accumulatedFees1[poolId];
 
         // Verificar se há fees acumuladas
         if (fees0 == 0 && fees1 == 0) {
@@ -604,6 +570,14 @@ contract AutoCompoundHook is BaseHook {
             }
         }
 
+        int24 tickLower = poolTickLower[poolId];
+        int24 tickUpper = poolTickUpper[poolId];
+        
+        // Verificar se temos um tick range configurado
+        if (tickLower == 0 && tickUpper == 0) {
+            return (false, params, fees0, fees1);
+        }
+        
         // Calcular o delta de liquidez baseado nas taxas
         int128 liquidityDelta = _calculateLiquidityFromAmounts(
             key,
@@ -631,15 +605,11 @@ contract AutoCompoundHook is BaseHook {
     
     /// @notice Executa o compound após ser chamado via unlock (deve ser chamado pelo helper)
     /// @dev Esta função deve ser chamada APENAS dentro de um unlock callback
-    /// @dev Aprova o CompoundHelper para transferir tokens antes de resetar contadores
     /// @param key A chave da pool
     /// @param fees0 Amount de fees0 que serão reinvestidas
     /// @param fees1 Amount de fees1 que serão reinvestidas
     function executeCompound(PoolKey calldata key, uint256 fees0, uint256 fees1) external {
-        // This function is called by CompoundHelper during unlock callback
-        // CompoundHelper is trusted and only called during unlock, so we allow it
-        // Note: In unlock callback context, msg.sender is the callback contract (CompoundHelper)
-        // not the PoolManager, so we can't check msg.sender == poolManager
+        require(msg.sender == address(poolManager), "Only PoolManager via unlock");
         
         PoolId poolId = key.toId();
         
@@ -753,56 +723,6 @@ contract AutoCompoundHook is BaseHook {
             uint24 numTicks = uint24(int24(maxTick - minTick + 1));
             
             maxLiquidityPerTick = uint128(type(uint128).max / uint256(numTicks));
-        }
-    }
-    
-    /// @notice Calcula as fees reais acumuladas na posição de liquidez
-    /// @dev Usa getPositionInfo e getFeeGrowthInside para calcular fees reais
-    /// @param key A chave da pool
-    /// @param positionOwner O endereço do dono da posição (CompoundHelper)
-    /// @param tickLower Tick inferior do range
-    /// @param tickUpper Tick superior do range
-    /// @return fees0 Fees reais em token0
-    /// @return fees1 Fees reais em token1
-    function _getRealPositionFees(
-        PoolKey calldata key,
-        address positionOwner,
-        int24 tickLower,
-        int24 tickUpper
-    ) internal view returns (uint256 fees0, uint256 fees1) {
-        PoolId poolId = key.toId();
-        bytes32 salt = bytes32(0); // Salt usado para a posição
-        
-        // Obter informações da posição
-        (uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128) = 
-            poolManager.getPositionInfo(poolId, positionOwner, tickLower, tickUpper, salt);
-        
-        // Se não há liquidez, não há fees
-        if (liquidity == 0) {
-            return (0, 0);
-        }
-        
-        // Obter fee growth atual dentro do range
-        (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) = 
-            poolManager.getFeeGrowthInside(poolId, tickLower, tickUpper);
-        
-        // Calcular fees acumuladas usando a fórmula: (feeGrowth - feeGrowthLast) * liquidity / Q128
-        unchecked {
-            if (feeGrowthInside0X128 > feeGrowthInside0LastX128) {
-                fees0 = FullMath.mulDiv(
-                    feeGrowthInside0X128 - feeGrowthInside0LastX128,
-                    liquidity,
-                    FixedPoint128.Q128
-                );
-            }
-            
-            if (feeGrowthInside1X128 > feeGrowthInside1LastX128) {
-                fees1 = FullMath.mulDiv(
-                    feeGrowthInside1X128 - feeGrowthInside1LastX128,
-                    liquidity,
-                    FixedPoint128.Q128
-                );
-            }
         }
     }
     
